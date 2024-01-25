@@ -1,0 +1,148 @@
+#include <iostream>
+#include <vector>
+#include <fstream>
+#include <cmath>
+#include "lodepng.h"
+#include <emmintrin.h>
+#include <omp.h>
+#include <chrono>
+
+using namespace std;
+using namespace lodepng;
+
+const string GREETING = "Choose the picture\n1 - 300x300 px\n2 - 400x400 px\n3 - 500x500 px\n4 - 600x600 px\n5 - 950x950 px\n6 - 2400x2400 px\n";
+const int amountOfIterations = 1;
+const double PI = 3.1415926535;
+
+void applyNegativeFilter(vector<unsigned char>& image, int width, int height) {
+    const __m128i pixelLimit = _mm_set1_epi8(255);
+    for (int i = 0; i < image.size(); i += 16) {
+        __m128i pixel = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&image[i]));
+        pixel = _mm_sub_epi8(pixelLimit, pixel);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(&image[i]), pixel);
+    }
+}
+
+vector<float> setKernel(int radius, float sigma) {
+    vector<float> kernel(2 * radius + 1);
+    float sigma_sq = sigma * sigma;
+    float sum = 0;
+    for (int i = -radius; i <= radius; i++) {
+        float r = sqrt(2 * PI) * sigma;
+        float num = exp(-(i * i) / (2 * sigma_sq));
+        kernel[i + radius] = num / r;
+        sum += kernel[i + radius];
+    }
+    for (int i = 0; i < kernel.size(); i++) {
+        kernel[i] /= sum;
+    }
+    return kernel;
+}
+
+void applyGaussianBlur(std::vector<unsigned char>& image, int width, int height, float sigma, int radius) {
+    vector<float> kernel = setKernel(radius, sigma);
+    vector<unsigned char> temp_image(image.size());
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x+=4) {
+            __m128 r = _mm_setzero_ps();
+            __m128 g = _mm_setzero_ps();
+            __m128 b = _mm_setzero_ps();
+            for (int i = -radius; i <= radius; i++) {
+                int index = 3 * (y * width + min(max(x + i, 0), width - 1));
+                __m128 kernels = _mm_set_ps(kernel[i+radius], kernel[i+radius], kernel[i+radius], kernel[i+radius]);
+                r = _mm_add_ps(r, _mm_mul_ps(kernels, _mm_set_ps(image[index], image[index], image[index], image[index])));
+                g = _mm_add_ps(g, _mm_mul_ps(kernels, _mm_set_ps(image[index+1], image[index+1], image[index+1], image[index+1])));
+                b = _mm_add_ps(b, _mm_mul_ps(kernels, _mm_set_ps(image[index+2], image[index+2], image[index+2], image[index+2])));
+            }
+            int index = 3 * (y * width + x);
+            _mm_store_ps(reinterpret_cast<float*>(&temp_image[index]), r);
+            _mm_store_ps(reinterpret_cast<float*>(&temp_image[index + 1]), g);
+            _mm_store_ps(reinterpret_cast<float*>(&temp_image[index + 2]), b);
+        }
+    }
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x+=4) {
+            __m128 r = _mm_setzero_ps();
+            __m128 g = _mm_setzero_ps();
+            __m128 b = _mm_setzero_ps();
+            for (int i = -radius; i <= radius; i++) {
+                int index = 3 * (y * width + min(max(x + i, 0), width - 1));
+                __m128 kernels = _mm_set_ps(kernel[i + radius], kernel[i + radius], kernel[i + radius], kernel[i + radius]);
+                r = _mm_add_ps(r, _mm_mul_ps(kernels, _mm_set_ps(temp_image[index], temp_image[index], temp_image[index], temp_image[index])));
+                g = _mm_add_ps(g, _mm_mul_ps(kernels, _mm_set_ps(temp_image[index + 1], temp_image[index + 1], temp_image[index + 1], temp_image[index + 1])));
+                b = _mm_add_ps(b, _mm_mul_ps(kernels, _mm_set_ps(temp_image[index + 2], temp_image[index + 2], temp_image[index + 2], temp_image[index + 2])));
+            }
+            int index = 3 * (y * width + x);
+            _mm_store_ps(reinterpret_cast<float*>(&image[index]), r);
+            _mm_store_ps(reinterpret_cast<float*>(&image[index + 1]), g);
+            _mm_store_ps(reinterpret_cast<float*>(&image[index + 2]), b);
+        }
+    }
+} 
+
+
+//сигнатура не совсем честная, хотя функция называется "приложить фильтр", помимо этого она ещё возвращает время наложения этого фильтра
+double applyFilter(vector<unsigned char> input, unsigned int width, unsigned int height, string filterType, string updateOutput) {
+    vector<unsigned char> imageCopy = input;
+    auto start = chrono::high_resolution_clock::now();
+    if (filterType == "negative") {
+        applyNegativeFilter(imageCopy, width, height);
+    }
+    else if (filterType == "gaussian") {
+        int radius = 15;
+        float sigma = 7.2;
+        applyGaussianBlur(imageCopy, width, height, sigma, radius);
+    }
+    auto end = chrono::high_resolution_clock::now();
+    auto duration = chrono::duration_cast<chrono::duration<double>>(end - start);
+    //cout << duration.count() << endl;
+    if (updateOutput == "YES") {
+        vector<unsigned char> output;
+        unsigned error = encode(output, imageCopy, width, height, LCT_RGB);
+        if (error) {
+            cout << "Ошибка при загрузке изображения: " << lodepng_error_text(error) << std::endl;
+            return -1;
+        }
+        ofstream file("outputPictures/" + filterType + "Output.png", ios::binary);
+        file.write((char*)output.data(), output.size());
+        file.close();
+    }
+    return duration.count();
+}
+
+double getAverageTime(vector<unsigned char> input, unsigned int width, unsigned int height, string filterType) {
+    double summ = applyFilter(input, width, height, filterType, "YES");
+    for (int i = 1; i < amountOfIterations; ++i) {
+        summ += applyFilter(input, width, height, filterType, "NO");
+    }
+    return summ / amountOfIterations;
+}
+
+vector<unsigned char> convertToThreeChannels(vector<unsigned char> input, int width, int height) {
+    const int numPixels = width * height;
+    const int numChannels = 4;
+    vector<unsigned char> output(numPixels * 3);
+    for (int i = 0, j = 0; i < numPixels * numChannels; i += numChannels, j += 3) {
+        output[j] = input[i];
+        output[j + 1] = input[i + 1];
+        output[j + 2] = input[i + 2];
+    }
+    return output;
+}
+
+int main()
+{
+    vector<unsigned char> image;
+    cout << GREETING;
+    string pictureNumber;
+    cin >> pictureNumber;
+    string filterType = "gaussian";
+    unsigned int width, height;
+    unsigned error = decode(image, width, height, "inputPictures/" + pictureNumber + ".png");
+    image = convertToThreeChannels(image, width, height);
+    cout << "The application of the " + filterType + " filter lasted " << getAverageTime(image, width, height, filterType) << " seconds\n";
+}
+
+//для применения векторизации легче использовать изображения в трёхканальном формате (чтобы просто игнорировать альфа-канал),
+//поэтому здесь перед обработкой изображения мы его переводим непосредственно в трёхканальный вид

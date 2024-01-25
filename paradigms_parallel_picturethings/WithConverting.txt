@@ -1,0 +1,78 @@
+#include <iostream>
+#include <vector>
+#include <fstream>
+#include "lodepng.h"
+#include <omp.h>
+#include <chrono>
+
+using namespace std;
+using namespace lodepng;
+
+const string GREETING = "Choose the picture\n1 - 300x300 px\n2 - 400x400 px\n3 - 500x500 px\n4 - 600x600 px\n5 - 950x950 px\n6 - 2400x2400 px\n";
+
+void applyNegativeFilter(vector<unsigned char>& input) {
+    //#pragma omp parallel for
+    for (int i = 0; i < input.size(); i += 4) {
+        input[i] = 255 - input[i];
+        input[i + 1] = 255 - input[i + 1];
+        input[i + 2] = 255 - input[i + 2];
+    }
+}
+
+void applyGaussianBlur(vector<unsigned char>& input) {
+
+}
+
+
+double applyFilter(vector<unsigned char> input, unsigned int width, unsigned int height, string filterType, string updateOutput) {
+    vector<unsigned char> imageCopy = input;
+    auto start = chrono::high_resolution_clock::now();
+    if (filterType == "negative") {
+        applyNegativeFilter(imageCopy);
+    }
+    else if (filterType == "gaussian") {
+        applyGaussianBlur(imageCopy);
+    }
+    auto end = chrono::high_resolution_clock::now();
+    if (updateOutput == "YES") {
+        vector<unsigned char> output;
+        unsigned error = encode(output, imageCopy, width, height);
+        ofstream file("outputPictures/" + filterType + "Output.png", ios::binary);
+        file.write((char*)output.data(), output.size());
+        file.close();
+    }
+    auto duration = chrono::duration_cast<chrono::duration<double>>(end - start);
+    return duration.count();
+}
+
+double getAverageTime(vector<unsigned char> input, unsigned int width, unsigned int height, string filterType, string updateOutput) {
+    double summ = 0;
+    for (int i = 0; i < 1000; ++i) {
+        summ += applyFilter(input, width, height, filterType, updateOutput);
+    }
+    return summ / 1000;
+}
+
+vector<unsigned char> convertToThreeChannel(vector<unsigned char> image, int width, int height) {
+    vector<unsigned char> newImage(3 * width * height);
+    int j = 0;
+    for (int i = 0; i < width * height * 4; i += 4) {
+        newImage[j] = image[i];
+        newImage[j + 1] = image[i + 1];
+        newImage[j + 2] = image[i + 2];
+        j += 3;
+    }
+    return newImage;
+}
+
+int main()
+{
+    vector<unsigned char> image;
+    cout << GREETING;
+    string pictureNumber;
+    cin >> pictureNumber;
+    unsigned int width, height;
+    unsigned error = decode(image, width, height, "inputPictures/" + pictureNumber + ".png");
+    image = convertToThreeChannel(image, width, height);
+    cout << "The application of the negative filter lasted " << getAverageTime(image, width, height, "negative", "NO") << " seconds\n";
+}
