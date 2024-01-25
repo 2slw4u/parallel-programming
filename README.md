@@ -1,0 +1,1 @@
+# paradigms_parallel_picturethings
